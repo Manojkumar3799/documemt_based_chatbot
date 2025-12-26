@@ -7,6 +7,50 @@ app.config["UPLOAD_FOLDER"] = "uploads"
 
 document_text = ""
 
+def load_pdfs_from_folder(folder):
+    """Load all PDF files from `folder` and append their extracted text into `document_text`."""
+    global document_text
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+    for fname in os.listdir(folder):
+        if fname.lower().endswith(".pdf"):
+            path = os.path.join(folder, fname)
+            try:
+                text = extract_text_from_pdf(path)
+                if text:
+                    document_text += "\n\n" + text.strip()
+            except Exception as e:
+                print(f"Failed to load {path}: {e}")
+
+# Load existing PDFs from the uploads folder at startup
+load_pdfs_from_folder(app.config["UPLOAD_FOLDER"])
+
+import re
+
+def find_paragraph(text, question):
+    """Return the full paragraph containing `question` (case-insensitive) if found.
+    Falls back to returning the matched sentence plus adjacent sentences if paragraphs are not available."""
+    if not text or not question:
+        return None
+
+    normalized = text.replace("\r\n", "\n")
+    # Split into paragraphs by blank lines
+    paragraphs = [p.strip() for p in normalized.split("\n\n") if p.strip()]
+
+    for p in paragraphs:
+        if question.lower() in p.lower():
+            return p
+
+    # Fallback: split into sentences and expand window
+    sentences = re.split(r'(?<=[.!?])\s+', normalized)
+    for idx, s in enumerate(sentences):
+        if question.lower() in s.lower():
+            start = max(0, idx - 1)
+            end = min(len(sentences), idx + 2)
+            return " ".join(sentences[start:end]).strip()
+
+    return None
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -22,7 +66,12 @@ def upload_pdf():
     pdf_path = os.path.join(app.config["UPLOAD_FOLDER"], pdf.filename)
     pdf.save(pdf_path)
 
-    document_text = extract_text_from_pdf(pdf_path)
+    try:
+        new_text = extract_text_from_pdf(pdf_path)
+        if new_text:
+            document_text += "\n\n" + new_text.strip()
+    except Exception as e:
+        print(f"Failed to extract text from uploaded PDF: {e}")
 
     return jsonify({"message": "PDF uploaded successfully"})
 
@@ -34,10 +83,9 @@ def ask_question():
     if not document_text:
         return jsonify({"answer": "Please upload a PDF first"})
 
-    # Simple keyword matching (basic logic)
-    for sentence in document_text.split("."):
-        if question.lower() in sentence.lower():
-            return jsonify({"answer": sentence})
+    paragraph = find_paragraph(document_text, question)
+    if paragraph:
+        return jsonify({"answer": paragraph})
 
     return jsonify({"answer": "Answer not found in document"})
 

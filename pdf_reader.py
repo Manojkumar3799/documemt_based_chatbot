@@ -5,6 +5,9 @@ def extract_text_from_pdf(pdf_path):
     text = ""
 
     for page in reader.pages:
-        text += page.extract_text()
+        page_text = page.extract_text()
+        if page_text:
+            # Add a blank line between pages so we get paragraph separation
+            text += page_text + "\n\n"
 
-    return text
+    return text.strip()
