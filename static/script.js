@@ -16,7 +16,7 @@ if (uploadForm) {
   });
 }
 
-// Chat behavior
+// Chat behavior with session support
 const messageForm = document.getElementById('messageForm');
 const questionInput = document.getElementById('question');
 const chatContainer = document.getElementById('chatContainer');
@@ -24,10 +24,19 @@ const typingIndicator = document.getElementById('typingIndicator');
 const sendBtn = document.getElementById('sendBtn');
 let isWaiting = false;
 
-function appendMessage(text, who = 'ai'){
+// session handling: store a session_id locally so the server keeps chat history per session
+let sessionId = localStorage.getItem('docbot_session') || null;
+
+function appendMessage(text, who = 'ai', meta = null){
   const el = document.createElement('div');
   el.className = 'message ' + (who === 'user' ? 'user':'ai');
   el.innerHTML = `<div class="content">${escapeHtml(text)}</div>`;
+  if(meta && meta.length){
+    const footer = document.createElement('div');
+    footer.className = 'message-meta';
+    footer.innerHTML = '<small class="muted">Sources: ' + meta.map(m => escapeHtml(m.source)).join(', ') + '</small>';
+    el.appendChild(footer);
+  }
   chatContainer.appendChild(el);
   scrollToBottom();
 }
@@ -63,13 +72,20 @@ async function sendMessage(){
   sendBtn.disabled = true;
 
   try{
-    const res = await fetch('/ask',{
+    const res = await fetch('/chat',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({question:text})
+      body: JSON.stringify({question:text, session_id: sessionId})
     });
     const data = await res.json();
-    appendMessage(data.answer || 'No answer received', 'ai');
+
+    // Save the session returned by server (so a new session gets persistently stored)
+    if(data.session_id){
+      sessionId = data.session_id;
+      localStorage.setItem('docbot_session', sessionId);
+    }
+
+    appendMessage(data.answer || 'No answer received', 'ai', data.sources || []);
   }catch(err){
     appendMessage('Error retrieving answer', 'ai');
   }finally{
@@ -105,3 +121,37 @@ if(chatContainer && chatContainer.children.length === 0){
   appendMessage('Hi 👋 — upload a PDF to get started. Ask questions about the document and I will answer.', 'ai');
 }
 
+// show session info in the UI
+const sessionInfoEl = document.getElementById('sessionId');
+if(sessionId && sessionInfoEl){ sessionInfoEl.textContent = sessionId; }
+
+// clear session button behavior
+const clearBtn = document.getElementById('clearSessionBtn');
+if(clearBtn){
+  clearBtn.addEventListener('click', async ()=>{
+    if(!sessionId){
+      // nothing to clear; just reset UI
+      localStorage.removeItem('docbot_session');
+      if(sessionInfoEl) sessionInfoEl.textContent = '(new)';
+      chatContainer.innerHTML = '';
+      appendMessage('Session cleared — upload a PDF to start a new chat.','ai');
+      return;
+    }
+
+    try{
+      const res = await fetch('/clear_session',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({session_id: sessionId})
+      });
+      const data = await res.json();
+      localStorage.removeItem('docbot_session');
+      sessionId = null;
+      if(sessionInfoEl) sessionInfoEl.textContent = '(new)';
+      chatContainer.innerHTML = '';
+      appendMessage(data.message || 'Session cleared.','ai');
+    }catch(err){
+      appendMessage('Failed to clear session','ai');
+    }
+  });
+}

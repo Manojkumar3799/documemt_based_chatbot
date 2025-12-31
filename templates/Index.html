@@ -43,6 +43,10 @@
         </section>
 
         <form id="messageForm" class="message-form">
+            <div class="message-controls">
+                <button type="button" id="clearSessionBtn" class="btn small">Clear chat</button>
+                <small id="sessionInfo" class="muted">Session: <span id="sessionId">(new)</span></small>
+            </div>
             <textarea id="question" placeholder="Ask anything about your uploaded document..." rows="1" autocomplete="off"></textarea>
             <button type="submit" id="sendBtn" aria-label="Send message" class="send-btn">
                 <!-- simple send icon -->

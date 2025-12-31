@@ -1,0 +1,11 @@
+Flask>=2.0
+PyPDF2>=3.0
+openai>=0.27.0
+# FAISS is optional and may be difficult to install on Windows. The app will fall back
+# to a numpy-based vector store if FAISS is not available.
+faiss-cpu>=1.7.4
+numpy>=1.24
+python-dotenv>=1.0
+sentence-transformers>=2.2.2  # optional fallback if no OPENAI_API_KEY
+scikit-learn>=1.2  # TF-IDF fallback for embeddings when no OpenAI / sentence-transformers available
+tqdm>=4.0
