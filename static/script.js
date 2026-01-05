@@ -79,6 +79,17 @@ async function sendMessage(){
     });
     const data = await res.json();
 
+    // If server returned an error, display it to the user
+    if(!res.ok){
+      appendMessage(data.error || 'Server error', 'ai');
+      return;
+    }
+
+    if(data.error){
+      appendMessage(data.error, 'ai');
+      return;
+    }
+
     // Save the session returned by server (so a new session gets persistently stored)
     if(data.session_id){
       sessionId = data.session_id;

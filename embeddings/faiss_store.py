@@ -123,22 +123,51 @@ class FaissStore:
         x = np.array(vector).astype("float32")
 
         if self.use_faiss:
-            faiss.normalize_L2(x)
-            D, I = self.index.search(np.array([x]), top_k)
-            results = []
-            for score, idx in zip(D[0], I[0]):
-                if idx < 0:
-                    continue
-                results.append((float(score), self.metadata[idx]))
-            return results
+            try:
+                # FAISS expects shape (n, dim)
+                x_batch = np.array([x])
+                faiss.normalize_L2(x_batch)
+                D, I = self.index.search(x_batch, top_k)
+                results = []
+                # If FAISS returns unexpected shapes, handle gracefully
+                if D.shape[0] == 0 or I.shape[0] == 0:
+                    return []
+                for score, idx in zip(D[0], I[0]):
+                    if idx < 0:
+                        continue
+                    # guard metadata index errors
+                    if idx >= len(self.metadata):
+                        print(f"Warning: FAISS returned idx {idx} >= metadata length {len(self.metadata)}")
+                        continue
+                    results.append((float(score), self.metadata[idx]))
+                return results
+            except Exception as e:
+                raise RuntimeError(f"FAISS query failed: {e}")
 
         # numpy-based search: cosine similarity via dot product of normalized vectors
-        norm = np.linalg.norm(x)
-        if norm == 0.0:
-            norm = 1.0
-        x = (x / norm).astype("float32")
-        scores = (self.index @ x)
-        # get indices of top scores
-        idxs = np.argsort(-scores)[:top_k]
-        results = [(float(scores[i]), self.metadata[i]) for i in idxs]
-        return results
+        try:
+            norm = np.linalg.norm(x)
+            if norm == 0.0:
+                norm = 1.0
+            x_norm = (x / norm).astype("float32")
+
+            # ensure index is a 2D array
+            if self.index.ndim != 2:
+                raise RuntimeError("Internal numpy index has invalid shape")
+
+            if self.index.shape[1] != x_norm.shape[0]:
+                raise RuntimeError(
+                    f"Query vector dimension ({x_norm.shape[0]}) does not match index dimension ({self.index.shape[1]})."
+                )
+
+            scores = (self.index @ x_norm)
+            idxs = np.argsort(-scores)[:top_k]
+            results = []
+            for i in idxs:
+                if i >= len(self.metadata):
+                    print(f"Warning: numpy index returned idx {i} >= metadata length {len(self.metadata)}")
+                    continue
+                results.append((float(scores[i]), self.metadata[i]))
+            return results
+        except Exception as e:
+            raise RuntimeError(f"Numpy-based query failed: {e}")

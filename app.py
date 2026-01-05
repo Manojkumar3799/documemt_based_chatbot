@@ -13,6 +13,7 @@ import uuid
 
 from ingestion.pdf_loader import extract_text_from_pdf, save_uploaded_pdf
 from ingestion.text_splitter import split_text_into_chunks
+from ingestion.summarizer import summarize_text
 from embeddings.embedder import Embedder
 from embeddings.faiss_store import FaissStore
 from chat.chat_loop import ChatLoop
@@ -25,8 +26,17 @@ app.config["DATA_PDFS"] = "data/pdfs"
 embedder = Embedder()
 store = FaissStore()
 # try to load existing index (if present)
-store.load()
+loaded = store.load()
 chat_loop = ChatLoop()
+
+# If we are using TF-IDF fallback and there is no index loaded, try to ingest PDFs automatically
+if getattr(embedder, "mode", None) == "tfidf" and (not loaded or store.index is None):
+    print("No vector index found and TF-IDF embedding backend is active — attempting to ingest PDFs under data/pdfs/...")
+    ok, msg = ingest_all_pdfs(app.config["DATA_PDFS"])
+    if ok:
+        print("Auto-ingest completed:", msg)
+    else:
+        print("Auto-ingest did not run:", msg)
 
 
 @app.route("/")
@@ -49,12 +59,17 @@ def upload_pdf():
     # split into chunks
     chunks = split_text_into_chunks(text, chunk_size=1000, overlap=200)
 
-    # prepare texts and metadata
+    # prepare texts and metadata (include a short summary for each chunk)
     texts = [c["text"] for c in chunks]
-    metadatas = [
-        {"source": os.path.basename(saved_path), "chunk_id": c["id"], "text": c["text"]}
-        for c in chunks
-    ]
+    metadatas = []
+    for c in chunks:
+        summary = summarize_text(c["text"])
+        metadatas.append({
+            "source": os.path.basename(saved_path),
+            "chunk_id": c["id"],
+            "text": c["text"],
+            "summary": summary,
+        })
 
     if texts:
         vectors = embedder.embed_texts(texts)
@@ -68,31 +83,51 @@ def upload_pdf():
     return jsonify({"message": "PDF uploaded and indexed"})
 
 
-@app.route("/ingest_all", methods=["POST"])
-def ingest_all():
-    """(Developer helper) Ingest all PDFs found under data/pdfs/ into vector store.
+def ingest_all_pdfs(root: str) -> (bool, str):
+    """Ingest all PDFs in `root` into the vector store.
 
-    This endpoint processes files in data/pdfs, extracts text, chunks, and builds a fresh index.
+    Returns (success, message)
     """
-    root = app.config["DATA_PDFS"]
     all_texts = []
     all_meta = []
+    if not os.path.exists(root):
+        return False, "PDFs folder not found"
+
     for fname in os.listdir(root):
         if not fname.lower().endswith(".pdf"):
             continue
         path = os.path.join(root, fname)
-        text = extract_text_from_pdf(path)
+        try:
+            text = extract_text_from_pdf(path)
+        except Exception as e:
+            print(f"Warning: failed to extract {path}: {e}")
+            continue
         chunks = split_text_into_chunks(text, chunk_size=1000, overlap=200)
         for c in chunks:
             all_texts.append(c["text"])
-            all_meta.append({"source": fname, "chunk_id": c["id"], "text": c["text"]})
+            # compute a short summary for the chunk (fast fallback used if OpenAI not configured)
+            summary = summarize_text(c["text"])
+            all_meta.append({"source": fname, "chunk_id": c["id"], "text": c["text"], "summary": summary})
 
     if not all_texts:
-        return jsonify({"message": "No PDFs found"})
+        return False, "No PDFs found"
 
     vectors = embedder.embed_texts(all_texts)
-    store.build_index(vectors, all_meta)
-    return jsonify({"message": "All PDFs ingested and indexed"})
+    # build a fresh index
+    try:
+        store.build_index(vectors, all_meta)
+    except Exception as e:
+        return False, f"Failed to build index: {e}"
+
+    return True, f"Ingested {len(all_texts)} chunks from {len(set([m['source'] for m in all_meta]))} PDFs"
+
+
+@app.route("/ingest_all", methods=["POST"])
+def ingest_all():
+    success, message = ingest_all_pdfs(app.config["DATA_PDFS"])
+    if success:
+        return jsonify({"message": message})
+    return jsonify({"message": message}), 400
 
 
 @app.route("/chat", methods=["POST"])
@@ -112,9 +147,15 @@ def chat():
 
     session_id = data.get("session_id") or str(uuid.uuid4())
 
-    answer, sources = chat_loop.handle(session_id, question, top_k=5)
+    try:
+        answer, sources = chat_loop.handle(session_id, question, top_k=5)
+        return jsonify({"answer": answer, "sources": sources, "session_id": session_id})
+    except Exception as e:
+        # log the full traceback to server stdout for debugging
+        import traceback
 
-    return jsonify({"answer": answer, "sources": sources, "session_id": session_id})
+        traceback.print_exc()
+        return jsonify({"error": str(e) or "Internal server error"}), 500
 
 
 @app.route("/clear_session", methods=["POST"])
